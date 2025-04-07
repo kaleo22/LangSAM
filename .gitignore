@@ -130,4 +130,6 @@ dmypy.json
 .pyre/
 
 #outputs
-.output/
+output/
+assets/Test.mp4
+testbkp.py
