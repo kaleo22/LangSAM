@@ -36,7 +36,6 @@ def ImageInference(image_pil, text, start_frame, end_frame, model):
                         print("No masks found for the given text prompt.")
 
                 except:
-                    #overlay = combine_all_masks(image_np, masks)
                     overlay = utils.draw_image(image_np, masks, first_result["mask_boxes"], first_result["mask_scores"], first_result["mask_labels"])
                     output_path = f"{args.output_path}/output_frame{id}.jpeg"
                     plt.imsave(output_path, overlay.astype(np.uint8))
