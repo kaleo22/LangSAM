@@ -5,6 +5,7 @@ import numpy as np
 import argparse
 import cv2
 import torch
+from lang_sam import utils
 
 def get_args_parser():
     parser = argparse.ArgumentParser(description="LangSAM Inference")
@@ -16,8 +17,31 @@ def get_args_parser():
     parser.add_argument("--end_frame", type=int, default=None, help="End frame for image processing")
     return parser
 
-def ImageInference(image_pil, text_prompt, start_frame, end_frame):
-    if start_frame is not None and end_frame is not None:
+def combine_all_masks(image_np, masks):
+    # Sicherstellen, dass alle Masken NumPy-Arrays sind
+    masks = [np.array(mask) for mask in masks]
+
+    # Erstelle eine leere Maske mit der gleichen Form wie das Eingangsbild
+    combined_mask = np.zeros_like(image_np)
+
+    # Iteriere über alle Masken und kombiniere sie
+    for mask in masks:
+        # Erweitere die Maske auf 3 Kanäle (RGB)
+        mask_3d = np.stack([mask] * 3, axis=-1)
+
+        # Wähle eine Farbe für die Maske (z. B. Rot)
+        mask_color = [255, 0, 0]
+
+        # Überlagere die Maske auf das kombinierte Bild
+        combined_mask = np.where(mask_3d > 0, mask_color, combined_mask)
+
+    # Kombiniere die Maske mit dem Eingangsbild
+    overlay = np.where(combined_mask > 0, combined_mask, image_np)
+
+    return overlay
+
+def ImageInference(image_pil, text, start_frame, end_frame, model):
+    if start_frame != 0 and end_frame is not None:
         if start_frame > end_frame:
             raise ValueError("start_frame must be less than or equal to end_frame")
         else:
@@ -25,8 +49,6 @@ def ImageInference(image_pil, text_prompt, start_frame, end_frame):
             while id <= end_frame:
                 image_pil = Image.open(f"{args.image_path}/frame_{id}.jpg").convert("RGB")
                 image_np = np.array(image_pil)
-                text = text_prompt
-                model = LangSAM()
                 results = model.predict([image_pil], [text])
                 first_result = results[0]
                 masks = first_result["masks"]
@@ -36,10 +58,8 @@ def ImageInference(image_pil, text_prompt, start_frame, end_frame):
                         print("No masks found for the given text prompt.")
                     
                 except:
-                    first_mask = masks[0]
-                    first_mask=np.array(first_mask)
-                    first_mask_3d = np.stack([first_mask] * 3, axis=-1)
-                    overlay = np.where(first_mask_3d > 0, [255, 0, 0], image_np)
+                    #overlay = combine_all_masks(image_np, masks)
+                    overlay = utils.draw_image(image_np, masks, first_result["mask_boxes"], first_result["mask_scores"], first_result["mask_labels"])
                     output_path = f"{args.output_path}/output_frame{id}.jpeg"
                     plt.imsave(output_path, overlay.astype(np.uint8))
                     print(f"Processed image saved to {output_path}")
@@ -48,24 +68,27 @@ def ImageInference(image_pil, text_prompt, start_frame, end_frame):
 
 
     else:
-        model = LangSAM()
         image_np = np.array(image_pil)
-        text = text_prompt
         results = model.predict([image_pil], [text])
+        
+
+        # Alle Keys aus Ergebnissen extrahieren
         first_result = results[0]
-        masks = first_result["masks"]  # Alle Masken
+        masks = first_result["masks"]
+        probs = first_result["scores"]
+        labels = first_result["labels"]
+        xyxy = first_result["boxes"]
+          
         try: 
             if not masks:
                 overlay = image_np
                 print("No masks found for the given text prompt.")
         except:
-            first_mask = masks[0]
-            first_mask=np.array(first_mask)
-            first_mask_3d = np.stack([first_mask] * 3, axis=-1)
-            overlay = np.where(first_mask_3d > 0, [255, 0, 0], image_np)
+            #overlay = combine_all_masks(image_np, masks)
+            overlay = utils.draw_image(image_np, masks, xyxy, probs, labels)
         return overlay
 
-def VideoInference(video_path, text_prompt, output_path):
+def VideoInference(video_path, text_prompt, output_path, model):
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise ValueError(f"Cannot open video: {video_path}")
@@ -84,14 +107,16 @@ def VideoInference(video_path, text_prompt, output_path):
         if not ret:
             break
 
-        # Frame in PIL-Format konvertieren
-        image_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        # Inferenz durchführen
+        if len(frame.shape) == 2:
+            image_pil = Image.fromarray(frame, mode='L')
+        else:
+            image_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        
         with torch.no_grad():
-            overlay = ImageInference(image_pil, text_prompt)
-        # Overlay zurück in BGR konvertieren
+            overlay = ImageInference(image_pil, text_prompt, start_frame, end_frame, model)
+        
         overlay_bgr = cv2.cvtColor(overlay.astype(np.uint8), cv2.COLOR_RGB2BGR)
-        # Frame speichern
+        
         out.write(overlay_bgr)
         del overlay_bgr, overlay, image_pil
 
@@ -102,7 +127,7 @@ def VideoInference(video_path, text_prompt, output_path):
             print("Clearing GPU cache...")
             torch.cuda.empty_cache()
             count = 0
-            print(torch.cuda.memory_summary())
+
 
         print(f"counted:{count}")
         frame_count += 1
@@ -120,16 +145,21 @@ if __name__ == "__main__":
     output_path = args.output_path
     start_frame = args.start_frame
     end_frame = args.end_frame
+    model = LangSAM()
+    
+    #Entscheidung Bild oder Video
     if video_path:
         output_path = f"{output_path}/output_video.mp4"
     else:
         output_path = f"{output_path}/output_image.png"
+    
+    #Entscheidung über Inferencemethode 
     if video_path:
-        VideoInference(video_path, text_prompt, output_path)
-    elif start_frame is not None and end_frame is not None:
-        overlay = ImageInference(image_path, text_prompt, start_frame, end_frame) 
+        VideoInference(video_path, text_prompt, output_path, model)
+
+    elif start_frame != 0 and end_frame is not None:
+        overlay = ImageInference(image_path, text_prompt, start_frame, end_frame, model)
+
     else:
         image_pil = Image.open(image_path).convert("RGB")
-        overlay = ImageInference(image_pil, text_prompt)
-        #plt.imsave(args.output_path, overlay.astype(np.uint8))
-        #print(f"Processed image saved to {args.output_path}")
+        overlay = ImageInference(image_pil, text_prompt, start_frame, end_frame, model)
