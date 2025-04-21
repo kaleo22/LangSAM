@@ -17,6 +17,28 @@ def get_args_parser():
     parser.add_argument("--end_frame", type=int, default=None, help="End frame for image processing")
     return parser
 
+def combine_all_masks(image_np, masks):
+    # Sicherstellen, dass alle Masken NumPy-Arrays sind
+    masks = [np.array(mask) for mask in masks]
+
+    # Erstelle eine leere Maske mit der gleichen Form wie das Eingangsbild
+    combined_mask = np.zeros_like(image_np)
+
+    # Iteriere über alle Masken und kombiniere sie
+    for mask in masks:
+        # Erweitere die Maske auf 3 Kanäle (RGB)
+        mask_3d = np.stack([mask] * 3, axis=-1)
+
+        # Wähle eine Farbe für die Maske (z. B. Rot)
+        mask_color = [255, 0, 0]
+
+        # Überlagere die Maske auf das kombinierte Bild
+        combined_mask = np.where(mask_3d > 0, mask_color, combined_mask)
+
+    # Kombiniere die Maske mit dem Eingangsbild
+    overlay = np.where(combined_mask > 0, combined_mask, image_np)
+
+    return overlay
 
 def ImageInference(image_pil, text, start_frame, end_frame, model):
     if start_frame != 0 and end_frame is not None:
@@ -27,16 +49,20 @@ def ImageInference(image_pil, text, start_frame, end_frame, model):
             while id <= end_frame:
                 image_pil = Image.open(f"{args.image_path}/frame_{id}.jpg").convert("RGB")
                 image_np = np.array(image_pil)
-                results = model.predict([image_pil], [text])
+                results = model.predict([image_pil], [text], [0.45])
                 first_result = results[0]
                 masks = first_result["masks"]
-                try:
-                    if not masks:
+                probs = first_result["scores"]
+                labels = first_result["labels"]
+                xyxy = first_result["boxes"]
+
+                if masks is None or len(masks) == 0:
                         overlay = image_np
                         print("No masks found for the given text prompt.")
 
-                except:
-                    overlay = utils.draw_image(image_np, masks, first_result["mask_boxes"], first_result["mask_scores"], first_result["mask_labels"])
+                else:
+                    #overlay = combine_all_masks(image_np, masks)
+                    overlay = utils.draw_image(image_np, masks, xyxy, probs, labels)
                     output_path = f"{args.output_path}/output_frame{id}.jpeg"
                     plt.imsave(output_path, overlay.astype(np.uint8))
                     print(f"Processed image saved to {output_path}")
@@ -52,17 +78,31 @@ def ImageInference(image_pil, text, start_frame, end_frame, model):
         # Alle Keys aus Ergebnissen extrahieren
         first_result = results[0]
         masks = first_result["masks"]
-        probs = first_result["scores"]
+        scores = first_result["scores"]
         labels = first_result["labels"]
         xyxy = first_result["boxes"]
 
-        try:
-            if not masks:
+
+        if masks is None or len(masks) == 0:
                 overlay = image_np
                 print("No masks found for the given text prompt.")
-        except:
-            overlay = utils.draw_image(image_np, masks, xyxy, probs, labels)
-        return overlay
+
+        else:
+            # Filtere Scores, Boxen und Labels basierend auf dem Schwellwert
+            valid_indices = scores >= 0.40  # Nur Scores >= 0.45 berücksichtigen
+            scores = scores[valid_indices]
+            xyxy = xyxy[valid_indices]
+            labels = [labels[i] for i in range(len(labels)) if valid_indices[i]]
+            masks = masks[valid_indices]
+
+        if len(scores) == 0:
+            overlay = image_np
+            print("No valid detections after applying the threshold.")
+
+        else:
+            #overlay = combine_all_masks(image_np, masks)
+            overlay = utils.draw_image(image_np, masks, xyxy, scores, labels)
+        return overlay, scores
 
 def VideoInference(video_path, text_prompt, output_path, model):
     cap = cv2.VideoCapture(video_path)
@@ -78,6 +118,8 @@ def VideoInference(video_path, text_prompt, output_path, model):
 
     frame_count = 0
     count = 0
+    iteration_id = 1
+    confidence_data = []
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -89,7 +131,9 @@ def VideoInference(video_path, text_prompt, output_path, model):
             image_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
 
         with torch.no_grad():
-            overlay = ImageInference(image_pil, text_prompt, start_frame, end_frame, model)
+            overlay, scores = ImageInference(image_pil, text_prompt, start_frame, end_frame, model)
+            iteration_id += 1
+            confidence_data.extend([(iteration_id, score) for score in scores])
 
         overlay_bgr = cv2.cvtColor(overlay.astype(np.uint8), cv2.COLOR_RGB2BGR)
 
@@ -112,6 +156,7 @@ def VideoInference(video_path, text_prompt, output_path, model):
     cap.release()
     out.release()
     print(f"Video saved to {output_path}")
+    return confidence_data
 
 if __name__ == "__main__":
     args = get_args_parser().parse_args()
@@ -131,7 +176,14 @@ if __name__ == "__main__":
 
     #Entscheidung über Inferencemethode
     if video_path:
-        VideoInference(video_path, text_prompt, output_path, model)
+        confidence_data = VideoInference(video_path, text_prompt, output_path, model)
+        plt.scatter(*zip(*confidence_data), marker='o', color='red')
+        plt.title("Confidence Scores")
+        plt.xlabel("Iteration")
+        plt.ylabel("Confidence Score")
+        plt.grid()
+        plt.legend()
+        plt.savefig(f"./output/confidence_scores.png")
 
     elif start_frame != 0 and end_frame is not None:
         overlay = ImageInference(image_path, text_prompt, start_frame, end_frame, model)
