@@ -6,6 +6,7 @@ import argparse
 import cv2
 import torch
 from lang_sam import utils
+import tools
 
 def get_args_parser():
     parser = argparse.ArgumentParser(description="LangSAM Inference")
@@ -15,6 +16,7 @@ def get_args_parser():
     parser.add_argument("--output_path", type=str, default="output", help="Directory to save the output")
     parser.add_argument("--start_frame", type=int, default=0, help="Start frame for image processing")
     parser.add_argument("--end_frame", type=int, default=None, help="End frame for image processing")
+    parser.add_argument("--confidence_threshold", type=float, default=0.45, help="Confidence threshold for predictions")
     return parser
 
 def combine_all_masks(image_np, masks):
@@ -40,7 +42,7 @@ def combine_all_masks(image_np, masks):
 
     return overlay
 
-def ImageInference(image_pil, text, start_frame, end_frame, model):
+def ImageInference(image_pil, text, start_frame, end_frame, model, confidence_threshold, kalman):
     if start_frame != 0 and end_frame is not None:
         if start_frame > end_frame:
             raise ValueError("start_frame must be less than or equal to end_frame")
@@ -89,7 +91,7 @@ def ImageInference(image_pil, text, start_frame, end_frame, model):
 
         else:
             # Filtere Scores, Boxen und Labels basierend auf dem Schwellwert
-            valid_indices = scores >= 0.40  # Nur Scores >= 0.45 berücksichtigen
+            valid_indices = scores >= confidence_threshold  # Nur Scores >= 0.45 berücksichtigen
             scores = scores[valid_indices]
             xyxy = xyxy[valid_indices]
             labels = [labels[i] for i in range(len(labels)) if valid_indices[i]]
@@ -100,11 +102,40 @@ def ImageInference(image_pil, text, start_frame, end_frame, model):
             print("No valid detections after applying the threshold.")
 
         else:
-            #overlay = combine_all_masks(image_np, masks)
-            overlay = utils.draw_image(image_np, masks, xyxy, scores, labels)
+            for index, label in enumerate(labels):
+                if label == "cars":
+                    x_min = int(xyxy[index - 1][0])
+                    y_min = int(xyxy[index - 1][1])
+                    x_max = int(xyxy[index - 1][2])
+                    y_max = int(xyxy[index - 1][3])
+                    center_x = (x_min + x_max) / 2
+                    center_y = (y_min + y_max) / 2
+                    ROI = np.array([[center_x], [center_y]], np.float32)
+                    kalman.correct(ROI)
+                    prediction = tools.kalman_predict(kalman, ROI)
+                    predicted_x = int(prediction[0][0])  # x-Koordinate
+                    predicted_y = int(prediction[1][0])  # y-Koordinate
+                else:
+                    prediction = None
+
+                if index == len(labels) - 1:
+                    if prediction is not None:
+                        cv2.circle(image_np, (predicted_x, predicted_y), radius=5, color=(0, 255, 0), thickness=-1)
+                        print(f"Predicted position: ({predicted_x}, {predicted_y})")
+                        overlay = utils.draw_image(image_np, masks, xyxy, scores, labels)
+                    else:
+                        overlay = utils.draw_image(image_np, masks, xyxy, scores, labels)
+
+                else:
+                    if prediction is not None:
+                        cv2.circle(image_np, (predicted_x, predicted_y), radius=5, color=(0, 255, 0), thickness=-1)
+                        print(f"Predicted position: ({predicted_x}, {predicted_y})")
+                        image_np = utils.draw_image(image_np, masks, xyxy, scores, labels)
+                    else:
+                        image_np = utils.draw_image(image_np, masks, xyxy, scores, labels)
         return overlay, scores
 
-def VideoInference(video_path, text_prompt, output_path, model):
+def VideoInference(video_path, text_prompt, output_path, model, confidence_threshold, kalman):
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise ValueError(f"Cannot open video: {video_path}")
@@ -131,7 +162,7 @@ def VideoInference(video_path, text_prompt, output_path, model):
             image_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
 
         with torch.no_grad():
-            overlay, scores = ImageInference(image_pil, text_prompt, start_frame, end_frame, model)
+            overlay, scores = ImageInference(image_pil, text_prompt, start_frame, end_frame, model, confidence_threshold, kalman)
             iteration_id += 1
             confidence_data.extend([(iteration_id, score) for score in scores])
 
@@ -166,7 +197,9 @@ if __name__ == "__main__":
     output_path = args.output_path
     start_frame = args.start_frame
     end_frame = args.end_frame
+    confidence_threshold = args.confidence_threshold
     model = LangSAM()
+    kalman = tools.kalman_init()
 
     #Entscheidung Bild oder Video
     if video_path:
@@ -176,18 +209,18 @@ if __name__ == "__main__":
 
     #Entscheidung über Inferencemethode
     if video_path:
-        confidence_data = VideoInference(video_path, text_prompt, output_path, model)
+        confidence_data = VideoInference(video_path, text_prompt, output_path, model, confidence_threshold, kalman)
         plt.scatter(*zip(*confidence_data), marker='o', color='red')
         plt.title("Confidence Scores")
         plt.xlabel("Iteration")
         plt.ylabel("Confidence Score")
         plt.grid()
         plt.legend()
-        plt.savefig(f"./output/confidence_scores.png")
+        plt.savefig(f"./output/confidence_scores_{confidence_threshold}.png")
 
     elif start_frame != 0 and end_frame is not None:
-        overlay = ImageInference(image_path, text_prompt, start_frame, end_frame, model)
+        overlay = ImageInference(image_path, text_prompt, start_frame, end_frame, model, confidence_threshold)
 
     else:
         image_pil = Image.open(image_path).convert("RGB")
-        overlay = ImageInference(image_pil, text_prompt, start_frame, end_frame, model)
+        overlay = ImageInference(image_pil, text_prompt, start_frame, end_frame, model, confidence_threshold)
