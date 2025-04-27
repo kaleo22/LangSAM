@@ -11,8 +11,8 @@ import tools
 def get_args_parser():
     parser = argparse.ArgumentParser(description="LangSAM Inference")
     parser.add_argument("--image_path", type=str, help="Path to the input image")
-    parser.add_argument("--video_path", type=str, help="Path to the input video")
-    parser.add_argument("--text_prompt", type=str, required=True, help="Text prompt for segmentation")
+    parser.add_argument("--video_path", type=str, default="./assets/Test.mp4", help="Path to the input video")
+    parser.add_argument("--text_prompt", type=str, default="wheel, car, truck.", help="Text prompt for segmentation")
     parser.add_argument("--output_path", type=str, default="output", help="Directory to save the output")
     parser.add_argument("--start_frame", type=int, default=0, help="Start frame for image processing")
     parser.add_argument("--end_frame", type=int, default=None, help="End frame for image processing")
@@ -103,13 +103,13 @@ def ImageInference(image_pil, text, start_frame, end_frame, model, confidence_th
 
         else:
             for index, label in enumerate(labels):
-                if label == "cars":
+                if label == "car":
                     x_min = int(xyxy[index - 1][0])
                     y_min = int(xyxy[index - 1][1])
                     x_max = int(xyxy[index - 1][2])
                     y_max = int(xyxy[index - 1][3])
-                    center_x = (x_min + x_max) / 2
-                    center_y = (y_min + y_max) / 2
+                    center_x = (x_max - x_min) / 2 + x_min
+                    center_y = (y_max - y_min) / 2 + y_min
                     ROI = np.array([[center_x], [center_y]], np.float32)
                     kalman.correct(ROI)
                     prediction = tools.kalman_predict(kalman, ROI)
