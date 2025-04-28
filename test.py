@@ -107,7 +107,7 @@ def ImageInference(image_pil, text, start_frame, end_frame, model, confidence_th
                 message_json = json.dumps(message)
 
                 return message_json
-            
+
             # Sende die Nachricht über MQTT
             client.publish(topic_1, message_json)
 
