@@ -7,6 +7,9 @@ import cv2
 import torch
 from lang_sam import utils
 import tools
+from paho.mqtt import client as mqtt_client
+import random
+import json
 
 def get_args_parser():
     parser = argparse.ArgumentParser(description="LangSAM Inference")
@@ -86,8 +89,9 @@ def ImageInference(image_pil, text, start_frame, end_frame, model, confidence_th
 
 
         if masks is None or len(masks) == 0:
-                overlay = image_np
-                print("No masks found for the given text prompt.")
+            overlay = image_np
+            print("No masks found for the given text prompt.")
+            client.publish(topic_1, "No masks found for the given text prompt.")
 
         else:
             # Filtere Scores, Boxen und Labels basierend auf dem Schwellwert
@@ -96,6 +100,16 @@ def ImageInference(image_pil, text, start_frame, end_frame, model, confidence_th
             xyxy = xyxy[valid_indices]
             labels = [labels[i] for i in range(len(labels)) if valid_indices[i]]
             masks = masks[valid_indices]
+
+            message = []
+            for bbox, label in zip(xyxy, labels):
+                message.append([bbox, label])
+                message_json = json.dumps(message)
+
+                return message_json
+            
+            # Sende die Nachricht über MQTT
+            client.publish(topic_1, message_json)
 
         if len(scores) == 0:
             overlay = image_np
@@ -153,6 +167,11 @@ def VideoInference(video_path, text_prompt, output_path, model, confidence_thres
     confidence_data = []
     while True:
         ret, frame = cap.read()
+
+        _, buffer = cv2.imencode('.jpg', frame)
+        frame_bytes = buffer.tobytes()
+        client.publish(topic_2, frame_bytes)
+
         if not ret:
             break
 
@@ -190,6 +209,21 @@ def VideoInference(video_path, text_prompt, output_path, model, confidence_thres
     return confidence_data
 
 if __name__ == "__main__":
+    #MQTT Broker
+    broker = 'emqx1.eqmx.io'
+    port = 1883
+
+    topic_1 = "bbox/topic"
+    topic_2 = "frame/topic"
+
+    client_id = f'python-mqtt-{random.randint(0, 1000)}'
+
+    client = tools.mqtt_client.Client(client_id)
+
+    client.connect(broker, port)
+
+    client.loop_start()
+
     args = get_args_parser().parse_args()
     image_path = args.image_path
     text_prompt = args.text_prompt
