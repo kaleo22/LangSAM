@@ -218,7 +218,7 @@ if __name__ == "__main__":
 
     client_id = f'python-mqtt-{random.randint(0, 1000)}'
 
-    client = tools.mqtt_client.Client(client_id)
+    client = mqtt_client.Client(client_id)
 
     client.connect(broker, port)
 

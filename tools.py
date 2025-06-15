@@ -51,4 +51,3 @@ def on_message(client, userdata, msg):
     else:
         data =  json.loads(payload.decode())
         return data
-    print(f"Received `{msg.payload.decode()}` from `{msg.topic}` topic")
