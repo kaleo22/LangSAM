@@ -133,3 +133,4 @@ dmypy.json
 output/
 assets/Test.mp4
 testbkp.py
+-lang-segment-anything-inpu.txt
