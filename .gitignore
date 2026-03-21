@@ -134,3 +134,8 @@ output/
 assets/Test.mp4
 testbkp.py
 -lang-segment-anything-inpu.txt
+.vscode/browse.vc.db
+.vscode/browse.vc.db-shm
+.vscode/browse.vc.db-wal
+.vscode/c_cpp_properties.json
+.vscode/settings.json
