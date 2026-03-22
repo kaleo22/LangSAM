@@ -7,9 +7,6 @@ import cv2
 import torch
 from lang_sam import utils
 import tools
-#from paho.mqtt import client as mqtt_client
-import random
-import json
 import pandas as pd
 import logging
 
@@ -23,11 +20,10 @@ def get_args_parser():
     parser.add_argument("--end_frame", type=int, default=None, help="End frame for image processing")
     parser.add_argument("--confidence_threshold", type=float, default=0.45, help="Confidence threshold for predictions")
     parser.add_argument("--csv", type=bool, default=True, help="Save data to CSV")
-    parser.add_argument("--com", type=bool, default=False, help="Use MQTT communication")
     return parser
 
 
-def ImageInference(image_pil, text, start_frame, end_frame, model, confidence_threshold, kalman, com_bool)-> tuple:
+def ImageInference(image_pil, text, start_frame, end_frame, model, confidence_threshold, kalman)-> tuple:
     """
     Führt die Bild-Inferenz durch und verarbeitet die Ergebnisse.
 
@@ -39,7 +35,6 @@ def ImageInference(image_pil, text, start_frame, end_frame, model, confidence_th
         model (LangSAM): Das Modell für die Segmentierung.
         confidence_threshold (float): Schwellwert für die Konfidenz.
         kalman (object): Kalman-Filter-Objekt.
-        com_bool (bool): Flag für die MQTT-Kommunikation.
 
     Returns:
         tuple: Overlay-Bild, Scores, Labels, Bounding Boxes.
@@ -94,11 +89,6 @@ def ImageInference(image_pil, text, start_frame, end_frame, model, confidence_th
             overlay = image_np
             logging.info("No masks found for the given text prompt.")
 
-            if com_bool == True:
-                client.publish(topic_1, "No masks found for the given text prompt.")
-            else:
-                pass
-
         else:
             # Filtere Scores, Boxen und Labels basierend auf dem Schwellwert
             valid_indices = scores >= confidence_threshold  # Nur Scores >= 0.45 berücksichtigen
@@ -106,20 +96,6 @@ def ImageInference(image_pil, text, start_frame, end_frame, model, confidence_th
             xyxy = xyxy[valid_indices]
             labels = [labels[i] for i in range(len(labels)) if valid_indices[i]]
             masks = masks[valid_indices]
-
-            message = []
-
-            if com_bool == True:
-                for bbox, label in zip(xyxy, labels):
-                    message.append([bbox, label])
-                    message_json = json.dumps(message)
-
-                    return message_json
-
-                # Sende die Nachricht über MQTT
-                client.publish(topic_1, message_json)
-            else:
-                pass
 
         if len(scores) == 0:
             overlay = image_np
@@ -159,7 +135,7 @@ def ImageInference(image_pil, text, start_frame, end_frame, model, confidence_th
                         overlay = utils.draw_image(image_np, masks, xyxy, scores, labels)
         return overlay, scores, labels, xyxy
 
-def VideoInference(video_path, text_prompt, output_path, model, confidence_threshold, kalman, com_bool)-> pd.DataFrame:
+def VideoInference(video_path, text_prompt, output_path, model, confidence_threshold, kalman)-> pd.DataFrame:
     """
     Führt die Video-Inferenz durch und speichert die Ergebnisse.
 
@@ -170,7 +146,6 @@ def VideoInference(video_path, text_prompt, output_path, model, confidence_thres
         model (LangSAM): Das Modell für die Segmentierung.
         confidence_threshold (float): Schwellwert für die Konfidenz.
         kalman (object): Kalman-Filter-Objekt.
-        com_bool (bool): Flag für die MQTT-Kommunikation.
 
     Returns:
         pd.DataFrame: DataFrame der Confidence Scores.
@@ -199,14 +174,6 @@ def VideoInference(video_path, text_prompt, output_path, model, confidence_thres
     while True and frame_count <= 54000:
         ret, frame = cap.read()
 
-        if com_bool == True:
-
-            _, buffer = cv2.imencode('.jpg', frame)
-            frame_bytes = buffer.tobytes()
-            client.publish(topic_2, frame_bytes)
-        else:
-            pass
-
         if not ret:
             break
 
@@ -216,7 +183,7 @@ def VideoInference(video_path, text_prompt, output_path, model, confidence_thres
             image_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
 
         with torch.no_grad():
-            overlay, scores, labels, xyxy = ImageInference(image_pil, text_prompt, start_frame, end_frame, model, confidence_threshold, kalman, com_bool)
+            overlay, scores, labels, xyxy = ImageInference(image_pil, text_prompt, start_frame, end_frame, model, confidence_threshold, kalman)
 
         if len(xyxy) > 0:
             x_min = [float(bbox[0]) for bbox in xyxy]
@@ -279,7 +246,6 @@ if __name__ == "__main__":
     end_frame = args.end_frame
     confidence_threshold = args.confidence_threshold
     csv_bool = args.csv
-    com_bool = args.com
 
     logging.basicConfig(
         filename="output.log",  
@@ -296,25 +262,6 @@ if __name__ == "__main__":
     logging.getLogger().addHandler(console_handler)
 
 
-    if com_bool == True:
-        #MQTT Broker
-        broker = 'emqx1.eqmx.io'
-        port = 1883
-
-        topic_1 = "bbox/topic"
-        topic_2 = "frame/topic"
-
-        client_id = f'python-mqtt-{random.randint(0, 1000)}'
-
-        client = mqtt_client.Client(client_id, protocol=mqtt_client.MQTTv311)
-
-        client.connect(broker, port)
-
-        client.loop_start()
-    else:
-        pass
-
-
     model = LangSAM()
     kalman = tools.kalman_init()
 
@@ -326,12 +273,12 @@ if __name__ == "__main__":
 
     #Entscheidung über Inferencemethode
     if video_path:
-        data = VideoInference(video_path, text_prompt, output_path, model, confidence_threshold, kalman, com_bool)
+        data = VideoInference(video_path, text_prompt, output_path, model, confidence_threshold, kalman)
         
 
     elif start_frame != 0 and end_frame is not None:
-        overlay = ImageInference(image_path, text_prompt, start_frame, end_frame, model, confidence_threshold, kalman, com_bool)
+        overlay = ImageInference(image_path, text_prompt, start_frame, end_frame, model, confidence_threshold, kalman)
 
     else:
         image_pil = Image.open(image_path).convert("RGB")
-        overlay = ImageInference(image_pil, text_prompt, start_frame, end_frame, model, confidence_threshold, kalman, com_bool)
+        overlay = ImageInference(image_pil, text_prompt, start_frame, end_frame, model, confidence_threshold, kalman)
